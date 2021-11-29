@@ -1,0 +1,1 @@
+HLAVICKA = 1
