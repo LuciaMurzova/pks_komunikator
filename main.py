@@ -1,15 +1,45 @@
+import binascii
 import ipaddress
-import select
 import socket
 import struct
 import sys
 import time
 import const
-import typ
-
+import typy_sprav
+from binascii import crc32
 
 velkost_fragmentu: int
-typ: int
+# typ: int
+
+# -------------------------------------------------------------------------
+# SPOLOCNE
+
+
+def zabal_hlavicku(typ_spravy: int):
+    return struct.pack('b', typ_spravy)
+
+
+def zabal_hlavicku_n(typ_spravy: int, crc: int):
+    #return struct.pack('bH', typ_spravy, crc16)
+    return struct.pack('bI', typ_spravy, crc)
+
+
+def rozbal_hlavicku(data):
+    return struct.unpack('b', data[:const.HLAVICKA])
+
+
+def rozbal_hlavicku_n(data):
+    return struct.unpack('bI', data)
+
+
+def ukonci_spojenie(sock, ip, port):
+    hlavicka = zabal_hlavicku_n(ord(typy_sprav.koniec), 0)
+    #hlavicka = struct.pack('b', ord(typy_sprav.koniec))
+    sock.sendto(hlavicka, (ip, port))
+
+
+# -------------------------------------------------------------------------
+# KLIENT
 
 
 def odoslanie_suboru(sock, host, port: int):
@@ -31,24 +61,28 @@ def odoslanie_suboru(sock, host, port: int):
 def odoslanie_spravy(sock, host, port: int):
     print("\nOdosielanie spravy je mozne zrusit prazdnou spravou.")
 
-    hlavicka = struct.pack('b', ord('U'))
-    sprava = 'AHOJ TY KOKOT SERVER'
-    sock.sendto(hlavicka + sprava.encode(), (host, port))
+    # odoslanie informacii serveru, ze budu posielane spravy
+    hlavicka = zabal_hlavicku(ord(typy_sprav.sprava))
+    sock.sendto(hlavicka, (host, port))
 
     while True:
         sprava = input("Klient (ja): ")
         # ukoncenie odosielania sprav prazdnou spravou
         if len(sprava) == 0 or sprava == ' ':
-           # sock.sendto(sprava.encode(), (host, port))
             ukonci_spojenie(sock, host, port)
             print("UKONCUJEM ODOSIELANIE SPRAV")
             return
 
-        sock.sendto(sprava.encode(), (host, port))
+        hlavicka = zabal_hlavicku_n(ord(typy_sprav.data), binascii.crc32(sprava.encode()))
+        #print(sys.getsizeof(hlavicka), hlavicka[1], sys.getsizeof(hlavicka[1]))
+        sock.sendto(hlavicka + sprava.encode(), (host, port))
         data, addr = sock.recvfrom(1024)
 
+        hlavicka = rozbal_hlavicku(data)
+        typ_spravy = chr(hlavicka[0])
+
         # ukoncenie odosielania sprav zo strany servera
-        if len(data.decode()) == 0 or data.decode() == ' ':
+        if typ_spravy == typy_sprav.koniec:
             print("SERVER UKONCIL ODOSIELANIE SPRAV")
             return
 
@@ -66,15 +100,25 @@ def validuj_ip(address):
         return False
 
 
-def nadviaz_spojenie(sock, ip, port):
-    hlavicka = struct.pack('b', ord('A'))
-    sprava = 'ahoj server'
-    sock.sendto(hlavicka + sprava.encode(), (ip, port))
-
-
-def ukonci_spojenie(sock, ip, port):
-    hlavicka = struct.pack('b', ord(typ.koniec))
+def klient_nadviaz_spojenie(sock, ip, port):
+    # odosle serveru SYN
+    hlavicka = zabal_hlavicku(ord(typy_sprav.syn))
     sock.sendto(hlavicka, (ip, port))
+
+    data, addr = sock.recvfrom(1024)
+    hlavicka = rozbal_hlavicku(data)
+    typ_spravy = chr(hlavicka[0])
+
+    # dostane SYN od serveru
+    if typ_spravy == typy_sprav.syn:
+        # posle serveru ACK
+        hlavicka = zabal_hlavicku(ord(typy_sprav.ack))
+        sock.sendto(hlavicka, (ip, port))
+        return True
+
+    else:
+        print('neprislo mi potvrdenie')
+        return False
 
 
 #def vypocitaj_checksum():
@@ -97,7 +141,9 @@ def klient():
     while velkost_fragmentu.isnumeric() is False or int(velkost_fragmentu) <= 0:
         velkost_fragmentu = input("Zadajte platnu velkost: ")
 
-    nadviaz_spojenie(sock, ip, port)
+    if klient_nadviaz_spojenie(sock, ip, port) is False:
+        print("Nepodarilo sa nadviazat spojenie so serverom")
+        return
 
     while True:
         volba = input("\n1 - Odoslanie spravy \n2 - Odoslanie suboru \n0 - Ukoncenie spojenia \nVolba: ")
@@ -111,8 +157,7 @@ def klient():
 
         elif volba == '0':
             print('UKONCENIE SPOJENIA\n')
-            sprava = ''
-            sock.sendto(sprava.encode(), (ip, port))
+            ukonci_spojenie(sock, ip, port)
             return
         else:
             continue
@@ -122,20 +167,29 @@ def klient():
     return
 
 
-def server_spravy(sock, ip, port):
+# -------------------------------------------------------------------------
+# SERVER
+
+
+def server_spravy(sock):
     while True:
-        # ukoncenie zo strany klienta
         data, addr = sock.recvfrom(1024)
-        if len(data.decode()) == 0 or data.decode() == ' ':
+
+        #hlavicka = rozbal_hlavicku(data)
+        hlavicka = rozbal_hlavicku_n(data[:const.HLAVICKA_N])
+        typ_spravy = chr(hlavicka[0])
+
+        # ukoncenie zo strany klienta
+        if typ_spravy == typy_sprav.koniec:
             print("KLIENT UKONCIL ODOSIELANIE SPRAV")
             return
 
-        print("Klient: ", str(data.decode()))
+        print("Klient: ", data[const.HLAVICKA_N:].decode())
         sprava = input("Server (ja): ")
 
         # ukoncenie spojenia prazdnou spravou
         if len(sprava) == 0 or sprava == ' ':
-            sock.sendto(sprava.encode(), addr)
+            ukonci_spojenie(sock, addr[0], addr[1])
             print("UKONCUJEM ODOSIELANIE SPRAV")
             return
 
@@ -144,23 +198,33 @@ def server_spravy(sock, ip, port):
 
 #def skontroluj_checksum():
 
+
 def server_pripojenie(sock):
     data, addr = sock.recvfrom(1024)
 
-    a = struct.unpack('b', data[:const.HLAVICKA])
-    typ_spravy = chr(a[0])
+    hlavicka = rozbal_hlavicku(data)
+    typ_spravy = chr(hlavicka[0])
 
-    if typ == 'S':
-        print('mam ACK, posielam svoje')
-        syn = struct.pack(ord(typ.syn))
-        sock.sendto(syn, addr)
+    # dostane od klienta SYN
+    if typ_spravy == typy_sprav.syn:
+        # posle klientovi tiez SYN
+        # syn = struct.pack('b', ord(typy_sprav.syn))
+        hlavicka = zabal_hlavicku(ord(typy_sprav.syn))
+        sock.sendto(hlavicka, addr)
+
+        data, addr = sock.recvfrom(1024)
+
+        hlavicka = rozbal_hlavicku(data)
+        typ_spravy = chr(hlavicka[0])
+
+        # dostane od klienta ACK
+        if typ_spravy == typy_sprav.ack:
+            print("Mam spojenie z: ", addr)
+            return addr
 
     else:
         print("prijal som inu spravu, spojenie sa nepodarilo nadviazat")
         return -1
-
-    print("Mam spojenie z: ", addr)
-    return addr
 
 
 def server():
@@ -183,61 +247,35 @@ def server():
         print("nepodarilo sa pripojit")
         ukonci_spojenie(sock, addr[0], addr[1])
 
-    #data, addr = sock.recvfrom(1024)
-    #print("Mam spojenie z: ", addr)
-
-    # ked posielam iba hlavicku potrebujem nieco z tohoto
-    #print(data.decode(), data.decode()[0])
-    #hlavicka = struct.unpack('b', data)
-    #print('Hl ', chr(hlavicka[0]) )
-
     while True:
         data, addr = sock.recvfrom(1024)
-        print(len(data), sys.getsizeof(data[:const.HLAVICKA]), len(data.decode()))
 
-        a = struct.unpack('b', data[:const.HLAVICKA])
-        typ = chr(a[0])
-        sprava = data.decode()[const.HLAVICKA:]
-
-        print(typ, sprava)
+        hlavicka = rozbal_hlavicku(data)
+        typ_spravy = chr(hlavicka[0])
 
         # odosielanie sprav
-        if typ == 'U':
-            server_spravy(sock, ip, port)
+        if typ_spravy == typy_sprav.sprava:
+            server_spravy(sock)
         # odosielanie suborov
 
-
-        #if data:
-        #    print("File name:", data)
-        #    file_name = data.strip()
-
-        #f = open(file_name, 'wb')
-
-        #while True:
-        #    ready = select.select([sock], [], [], timeout)
-        #    if ready[0]:
-        #        data, addr = sock.recvfrom(1024)
-        ##        f.write(data)
-        #    else:
-        #        print("%s Finish!" % file_name)
-        #        f.close()
-        #        break
+        if typ_spravy == typy_sprav.koniec:
+            print("\nKLIENT UKONCIL SPOJENIE")
+            return
 
 
 # 192.168.1.15
 if __name__ == '__main__':
-    typ: str = '1'
+    volba: str = '1'
 
-    while typ != '0':
-        typ = input("-------------------------------------------------------\n"
-                    "1 - Klient \n2 - Server\n0 - Ukoncenie programu\nVolba: ")
+    while volba != '0':
+        volba = input("-------------------------------------------------------\n"
+                      "1 - Klient \n2 - Server\n0 - Ukoncenie programu\nVolba: ")
 
-        if typ == '0':
-            print('ukoncenie aplikacie')
+        if volba == '0':
             exit()
-        elif typ == '1':
+        elif volba == '1':
             klient()
-        elif typ == '2':
+        elif volba == '2':
             server()
         else:
             print("neznamy vstup")

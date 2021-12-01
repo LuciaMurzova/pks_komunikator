@@ -1,1 +1,3 @@
 HLAVICKA = 1
+
+HLAVICKA_N = 8
