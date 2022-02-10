@@ -3,11 +3,11 @@ import ipaddress
 import os
 import socket
 import struct
-import time
 from enum import Enum
 
 
-# C:\Users\Lucia\Desktop\5. semester\PKS\2. Zadanie\bullo2.jpg
+# C:\Users\Lucia\Desktop\5. semester\PKS\2. Zadanie\ML.pdf
+
 class TypSpravy(Enum):
     ack = ord('A')
     nack = ord('N')
@@ -18,24 +18,25 @@ class TypSpravy(Enum):
     koniec = ord('K')
 
 
-buff: int = 1464    # najvacisa mozna velkost zadana uzivatelom - datova cast fragmentu
-N: int = 12     # pocet fragmentov na jedno odoslanie, max 255
-HLAVICKA = 8
+buff: int = 1472  # najvacisa mozna velkost fragmentu - datova cast fragmentu: buff-hlavicka
+N: int = 12  # pocet fragmentov na jedno odoslanie, max 255
+HLAVICKA = 4
+
 
 # -------------------------------------------------------------------------
 # SPOLOCNE
 
 
 def zabal_hlavicku(typ_spravy: int, cislo: int, data):
-    # return struct.pack('bH', typ_spravy, crc16)
+    # funkcia pouzivana pri odosielani suboru - postupnost bytov - nemoze uz pouzit encode, aj pri spravach - string
     if type(data) != bytes:
-        return struct.pack('bbI', typ_spravy, cislo, binascii.crc32(data.encode()))
+        return struct.pack('bbH', typ_spravy, cislo, binascii.crc_hqx(data.encode(), 0))
     else:
-        return struct.pack('bbI', typ_spravy, cislo, binascii.crc32(data))
+        return struct.pack('bbH', typ_spravy, cislo, binascii.crc_hqx(data, 0))
 
 
 def rozbal_hlavicku(data):
-    return struct.unpack('bbI', data)
+    return struct.unpack('bbH', data)
 
 
 def ukonci_spojenie(sock, ip, port):
@@ -80,7 +81,6 @@ def odoslanie_suboru(sock, host, port: int, velkost_fragmentu: int):
     subor.close()
 
     velkost_suboru: int = len(cely_subor)
-    print("velkost suboru: ", velkost_suboru)
     potrebne_fragmenty: int = vypocitaj_potrebne_fragmenty(cely_subor, velkost_fragmentu)
     pocet_skupin: int = vypocitaj_potrebne_skupiny(potrebne_fragmenty)
     neodoslane: int = potrebne_fragmenty
@@ -100,8 +100,6 @@ def odoslanie_suboru(sock, host, port: int, velkost_fragmentu: int):
         prijata_hlavicka = rozbal_hlavicku(data[:HLAVICKA])
         typ_spravy = prijata_hlavicka[0]
 
-    print(potrebne_fragmenty, pocet_skupin)
-
     for skupiny in range(pocet_skupin):
         # ak N-neodoslane > 0 posielame N fragmentov, inak iba zvysne neodoslane
         if N - neodoslane > 0:
@@ -119,7 +117,7 @@ def odoslanie_suboru(sock, host, port: int, velkost_fragmentu: int):
             # simulovanie chyby skratenim odoslaneho fragmentu
             if simulovanie_chyby and (fragment == 1 or fragment == 5):
                 sprava = fragmenty_na_odoslanie[fragment]
-                sock.sendto(hlavicka + sprava[:len(sprava)-2], (host, port))
+                sock.sendto(hlavicka + sprava[:len(sprava) - 2], (host, port))
             else:
                 sock.sendto(hlavicka + fragmenty_na_odoslanie[fragment], (host, port))
 
@@ -153,11 +151,13 @@ def odoslanie_suboru(sock, host, port: int, velkost_fragmentu: int):
         neodoslane -= na_odoslanie
 
     print("Subor bol uspesne odoslany \n"
-          "Absolutna cesta: ", absolutna_cesta, "\nVelkost suboru: ", velkost_suboru)
+          "Absolutna cesta: ", absolutna_cesta, "\nVelkost suboru: %.3f" % (velkost_suboru / (1024 * 1024)), "MB\n"
+          "Odoslane fragmenty: ", potrebne_fragmenty)
 
 
 def vypocitaj_potrebne_fragmenty(sprava_na_odoslanie, velkost_jedneho_fragmentu):
-    if len(sprava_na_odoslanie)/velkost_jedneho_fragmentu != int(len(sprava_na_odoslanie)/velkost_jedneho_fragmentu):
+    if len(sprava_na_odoslanie) / velkost_jedneho_fragmentu != int(
+            len(sprava_na_odoslanie) / velkost_jedneho_fragmentu):
         return int(len(sprava_na_odoslanie) / velkost_jedneho_fragmentu) + 1
     else:
         return int(len(sprava_na_odoslanie) / velkost_jedneho_fragmentu)
@@ -213,7 +213,7 @@ def odoslanie_spravy(sock, host, port: int, velkost_fragmentu: int):
             for fragment in range(na_odoslanie):
                 spravy.append(sprava[:velkost_fragmentu])
                 hlavicka = zabal_hlavicku(TypSpravy.data.value, fragment, spravy[fragment])
-                if fragment == 1 or fragment == 2 or fragment == N+1:
+                if fragment == 1 or fragment == 2 or fragment == N + 1:
                     sock.sendto(hlavicka + spravy[fragment].encode() + 'ch'.encode(), (host, port))
                 else:
                     sock.sendto(hlavicka + spravy[fragment].encode(), (host, port))
@@ -321,7 +321,7 @@ def klient():
 
     velkost_fragmentu = '0'
     while velkost_fragmentu.isnumeric() is False or \
-            int(velkost_fragmentu) <= 0 or int(velkost_fragmentu) > buff-HLAVICKA:
+            int(velkost_fragmentu) <= 0 or int(velkost_fragmentu) > buff - HLAVICKA:
         velkost_fragmentu = input("Zadajte velkost fragmentu 1 - %d: " % (buff - HLAVICKA))
     velkost_fragmentu = int(velkost_fragmentu)
 
@@ -362,7 +362,7 @@ def klient():
 
 
 def neposkodene_data(data, checksum):
-    kontrolny_checksum = binascii.crc32(data[HLAVICKA:])
+    kontrolny_checksum = binascii.crc_hqx(data[HLAVICKA:], 0)
 
     if kontrolny_checksum == checksum:
         return True
@@ -584,9 +584,9 @@ def server_subor(sock, addr, hlavicka, data):
 
     cielovy_subor.close()
 
-    print("Prijaty subor: ", nazov_prijimaneho_suboru,
-          "\nCesta k suboru: ", absolutna_cesta_ulozenia,
-          "\nPrijal som %d fragmentov o celkovej velkosti %d - %d" % (potrebne_fragmenty, velkost_suboru, prijata_velkost))
+    print("Prijaty subor: ", nazov_prijimaneho_suboru, "\nCesta k suboru: ", absolutna_cesta_ulozenia,
+          "\nPrijal som %d fragmentov o celkovej velkosti %.3f" %
+          (potrebne_fragmenty, velkost_suboru / (1024 * 1024)), "MB")
 
 
 def server_pripojenie(sock):
