@@ -1,3 +1,0 @@
-HLAVICKA = 8
-
-HLAVICKA_N = 12
